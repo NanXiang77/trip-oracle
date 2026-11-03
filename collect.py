@@ -1,8 +1,14 @@
 """采集入口：每运行一次，把未来 N 天的余票 + 天气落库。
 
 用法：
-    python collect.py            # 采集全部目的地
+    python collect.py            # 采集全部目的地（默认 8 天窗口 + 热度）
     python collect.py 吉林市 沈阳  # 只采集指定目的地
+
+环境变量（给计划任务区分"晨间快采"和"晚间全量"）：
+    COLLECT_DAYS   余票窗口天数，默认 FORECAST_DAYS(8)；晨间只要 2 天
+    HEAT_DAYS      热度回溯天数，默认 7（历史已在库，不必每次重拉 90 天）
+    SKIP_HEAT=1    跳过百度/抖音指数
+    SKIP_DOUYIN=1  跳过抖音（它要拉起一个 Edge，约 30 秒）
 """
 from __future__ import annotations
 
@@ -13,6 +19,9 @@ import time
 from trip_oracle import analyze, store
 from trip_oracle.collectors import heat, train, weather
 from trip_oracle.config import DESTINATIONS, FORECAST_DAYS, ORIGIN_CODE
+
+DAYS = int(os.environ.get("COLLECT_DAYS") or FORECAST_DAYS)
+HEAT_DAYS = int(os.environ.get("HEAT_DAYS") or 7)
 
 
 def main(argv: list[str]) -> int:
@@ -33,19 +42,19 @@ def main(argv: list[str]) -> int:
             continue
         t0 = time.time()
         # 去程：长春 -> 目的地
-        rows, daily = train.collect(d["name"], code, FORECAST_DAYS, direction="out")
+        rows, daily = train.collect(d["name"], code, DAYS, direction="out")
         store.save_train_rows(rows)
         store.save_train_daily(daily)
         all_daily.extend(daily)
         n_out = len(rows)
         # 回程：目的地 -> 长春（同样覆盖未来 N 天，供不同行程长度选用）
-        rrows, rdaily = train.collect(d["name"], ORIGIN_CODE, FORECAST_DAYS,
+        rrows, rdaily = train.collect(d["name"], ORIGIN_CODE, DAYS,
                                       direction="return", from_code=code)
         store.save_train_rows(rrows)
         store.save_train_daily(rdaily)
         all_daily.extend(rdaily)
 
-        w = weather.collect(d["name"], d["lat"], d["lon"], FORECAST_DAYS)
+        w = weather.collect(d["name"], d["lat"], d["lon"], DAYS)
         store.save_weather(w)
 
         print(f"[ok] {d['name']:<5} 去程 {n_out:>3} 条 / 回程 {len(rrows):>3} 条 "
@@ -60,7 +69,7 @@ def main(argv: list[str]) -> int:
         print("[heat] SKIP_HEAT=1，跳过百度/抖音指数（云端无 cookie，属预期行为）")
     else:
         try:
-            hres = heat.collect_all(days=90)
+            hres = heat.collect_all(days=HEAT_DAYS)
             ok = sum(1 for v in hres.values() if v["ok"])
             print(f"[ok] 搜索热度 {ok}/{len(hres)} 词成功"
                   + ("" if ok == len(hres) else "（失败多为 cookie 过期，更新 data/baidu_cookie.txt）"))
@@ -68,16 +77,22 @@ def main(argv: list[str]) -> int:
             print(f"[!] 搜索热度采集失败（不影响主流程）：{e}")
 
         # 抖音指数（creator.douyin.com，需已登录；未登录静默跳过）
+        # SKIP_DOUYIN=1：它每次要拉起一个 Edge（约 30 秒），晨间快采不必付这个成本
         try:
+            if os.environ.get("SKIP_DOUYIN") == "1":
+                raise RuntimeError("__skip__")
             from trip_oracle.collectors import douyin
-            dres = douyin.collect(days=90, wait_login=False)
+            dres = douyin.collect(days=HEAT_DAYS, wait_login=False)
             dok = sum(1 for v in dres.values() if v["ok"])
             if any("未登录" in v["msg"] for v in dres.values()):
                 print("[douyin] 未登录，跳过（手动运行 python -m trip_oracle.collectors.douyin 可扫码登录）")
             else:
                 print(f"[ok] 抖音指数 {dok}/{len(dres)} 词成功")
         except Exception as e:
-            print(f"[!] 抖音指数采集失败（不影响主流程）：{e}")
+            if str(e) == "__skip__":
+                print("[douyin] SKIP_DOUYIN=1，跳过")
+            else:
+                print(f"[!] 抖音指数采集失败（不影响主流程）：{e}")
 
     # 控制台预览：按目的地 × 日期打印拥挤等级（去/回取更紧一侧）
     print("\n拥挤等级（1 舒适 … 5 很挤，数字为该日拥挤指数，已含回程压力）")

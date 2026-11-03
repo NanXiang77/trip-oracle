@@ -13,19 +13,24 @@ foreach ($f in @($collect, $watch)) {
 }
 
 function Register-DailyCollect {
-    param([string]$Name, [string]$At, [string]$Desc)
-    $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$collect`"" -WorkingDirectory $dir
+    param([string]$Name, [string]$At, [string]$Desc, [string]$Mode = "")
+    $arg = if ($Mode) { "/c `"$collect`" $Mode" } else { "/c `"$collect`"" }
+    $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $arg -WorkingDirectory $dir
     $trigger = New-ScheduledTaskTrigger -Daily -At $At
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
         -ExecutionTimeLimit (New-TimeSpan -Hours 2)
     Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger `
         -Settings $settings -Description $Desc -Force | Out-Null
-    Write-Output ("[ok] {0}  daily at {1}" -f $Name, $At)
+    Write-Output ("[ok] {0}  daily at {1} {2}" -f $Name, $At, $Mode)
 }
 
-Register-DailyCollect -Name "TripOracle-Collect-08" -At "08:00" -Desc "trip-oracle: collect 12306 / weather / heat at 08:00"
-Register-DailyCollect -Name "TripOracle-Collect-20" -At "20:00" -Desc "trip-oracle: collect 12306 / weather / heat at 20:00"
+# Morning: 2-day window only (the "today column" needs today's ticket state; ~40s).
+Register-DailyCollect -Name "TripOracle-Collect-08" -At "08:00" -Mode "fast" `
+    -Desc "trip-oracle: morning fast collect (2 days, no heat) at 08:00"
+# Evening: full 8-day window + heat index + push (~5 min, nobody is waiting).
+Register-DailyCollect -Name "TripOracle-Collect-20" -At "20:00" `
+    -Desc "trip-oracle: full collect (8 days + heat) at 20:00"
 
 # Watch: every 2 hours from 2026-12-17 06:00 (ticket presale opens 12/17), ends 2027-01-05.
 $wAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$watch`" --once" -WorkingDirectory $dir
