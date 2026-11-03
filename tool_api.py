@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import urllib.parse
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import agent
@@ -38,6 +39,9 @@ HOST = os.environ.get("TOOL_API_HOST", "0.0.0.0")
 # 云平台（Render/Railway/Fly 等）会注入 PORT，本地默认 8910
 PORT = int(os.environ.get("TOOL_API_PORT") or os.environ.get("PORT") or "8910")
 TOKEN = os.environ.get("TOOL_API_TOKEN", "")
+# 本机推送通道：热度在本地采（要登录态），采完 POST 到这里入库。
+# 云端只收不采，因此不需要、也不应该持有任何百度/抖音凭证。
+INGEST_ENABLED = os.environ.get("INGEST_ENABLED", "1") not in ("0", "false", "False")
 
 NAME_DESC = {
     "get_crowd_matrix": "未来 8 天各目的地拥挤指数 / 售罄车次 / 天气",
@@ -98,6 +102,50 @@ def health() -> dict:
             "latest_snapshot": latest, "auth": bool(TOKEN)}
 
 
+def ingest_heat(payload) -> tuple[int, dict]:
+    """接收本机推来的热度行（只写 heat_daily，幂等 upsert）。
+
+    必须配置 TOOL_API_TOKEN —— 写接口不能用"无鉴权"模式，否则谁都能往库里灌数。
+    """
+    if not INGEST_ENABLED:
+        return 503, {"ok": False, "error": "接收通道已关闭（INGEST_ENABLED=0）"}
+    if not TOKEN:
+        return 503, {"ok": False,
+                     "error": "未设置 TOOL_API_TOKEN，拒绝写入（写接口必须鉴权）"}
+    if not isinstance(payload, dict):
+        return 400, {"ok": False, "error": "请求体应为 JSON 对象"}
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return 400, {"ok": False, "error": "缺少 rows 数组"}
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    clean, bad = [], 0
+    for r in rows:
+        if not isinstance(r, dict):
+            bad += 1
+            continue
+        dest, kw, d = r.get("dest"), r.get("keyword"), r.get("date")
+        if not (dest and kw and d):
+            bad += 1
+            continue
+        try:
+            heat = int(r.get("heat"))
+        except (TypeError, ValueError):
+            bad += 1
+            continue
+        clean.append({"dest": str(dest), "keyword": str(kw),
+                      "source": str(r.get("source") or "baidu_index"),
+                      "date": str(d)[:10], "heat": heat,
+                      "fetched_at": r.get("fetched_at") or now})
+    if not clean:
+        return 400, {"ok": False, "error": "没有一行合法数据（需 dest/keyword/date/heat）",
+                     "rejected": bad}
+    saved = store.save_heat_rows(clean)
+    return 200, {"ok": True, "saved": saved, "rejected": bad,
+                 "pushed_at": payload.get("pushed_at") or "",
+                 "status": store.heat_status()}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "tripOracleTools/1.0"
 
@@ -141,6 +189,12 @@ class Handler(BaseHTTPRequestHandler):
                  "description": s["function"]["description"],
                  "parameters": s["function"]["parameters"]}
                 for s in agent.TOOL_SPECS])
+        if path == "/ingest/status":         # 热度覆盖情况（本机推送是否成功，一眼可见）
+            if not self._auth_ok():
+                return self._send(401, {"error": "unauthorized"})
+            return self._send(200, {"enabled": INGEST_ENABLED,
+                                    "require_token": bool(TOKEN),
+                                    "sources": store.heat_status()})
         if path.startswith("/tools/"):
             if not self._auth_ok():
                 return self._send(401, {"error": "unauthorized"})
@@ -168,6 +222,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path.rstrip("/") == "/ingest/heat":
+            if not self._auth_ok():
+                return self._send(401, {"error": "unauthorized"})
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except ValueError as e:
+                return self._send(400, {"ok": False, "error": f"请求体不是合法 JSON：{e}"})
+            code, out = ingest_heat(payload)
+            return self._send(code, out)
         if not u.path.startswith("/tools/"):
             return self._send(404, {"error": "not found", "path": u.path})
         if not self._auth_ok():

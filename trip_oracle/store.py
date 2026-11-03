@@ -305,6 +305,16 @@ def save_heat_rows(rows: list[dict]):
     return len(rows)
 
 
+def heat_status() -> list[dict]:
+    """每个源的数据覆盖情况：最新日期 / 行数 / 最后写入时间（供 /ingest/status 用）。"""
+    with conn() as c:
+        cur = c.execute(
+            """SELECT source, MAX(date) AS last_date, COUNT(*) AS rows,
+                      MAX(fetched_at) AS last_in
+               FROM heat_daily GROUP BY source ORDER BY last_date""")
+        return [dict(r) for r in cur.fetchall()]
+
+
 def latest_heat(source: str | None = None):
     with conn() as c:
         sql = "SELECT * FROM heat_daily"

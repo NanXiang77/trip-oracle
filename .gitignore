@@ -9,6 +9,7 @@ data/edge_cdp_profile/
 data/douyin_profile/
 data/*.log
 data/baidu_cookie.txt
+data/cloud.json
 dist/
 *.zip
 # 本地临时
