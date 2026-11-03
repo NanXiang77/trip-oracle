@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+# 大数据 / 本机私有文件，绝不入库
+data/edge_cdp_profile/
+data/douyin_profile/
+data/*.log
+data/baidu_cookie.txt
+dist/
+*.zip
+# 本地临时
+.claude/
+.idea/
+.vscode/

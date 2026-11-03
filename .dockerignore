@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.git/
+.gitignore
+dist/
+*.zip
+data/*.log
+data/baidu_cookie.txt
+data/edge_cdp_profile/
+data/douyin_profile/
+tests/
+.venv/
+venv/
+*.md
+!交平台-接入说明.md

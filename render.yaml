@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: trip-oracle-tools
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    envVars:
+      - key: SKIP_HEAT
+        value: "1"
+      - key: ENABLE_SCHEDULER
+        value: "1"
+      - key: COLLECT_HOURS
+        value: "8,20"
+      - key: TOOL_API_PUBLIC_URL
+        sync: false
+      - key: TOOL_API_TOKEN
+        generateValue: true
