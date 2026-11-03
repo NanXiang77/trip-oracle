@@ -32,6 +32,19 @@ Register-DailyCollect -Name "TripOracle-Collect-08" -At "08:00" -Mode "fast" `
 Register-DailyCollect -Name "TripOracle-Collect-20" -At "20:00" `
     -Desc "trip-oracle: full collect (8 days + heat) at 20:00"
 
+# Services: start dashboard (8901) + tool API (8910) at logon, no time limit.
+$sSvc = Join-Path $dir "start_services.bat"
+if (-not (Test-Path $sSvc)) { throw "missing file: $sSvc" }
+$sAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$sSvc`"" -WorkingDirectory $dir
+$sTrigger = New-ScheduledTaskTrigger -AtLogOn
+$sTrigger.UserId = $env:USERNAME
+$sSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+Register-ScheduledTask -TaskName "TripOracle-Services" -Action $sAction -Trigger $sTrigger `
+    -Settings $sSettings -Description "trip-oracle: auto-start dashboard 8901 + tool api 8910 at logon" -Force | Out-Null
+Write-Output "[ok] TripOracle-Services  at logon"
+
 # Watch: every 2 hours from 2026-12-17 06:00 (ticket presale opens 12/17), ends 2027-01-05.
 $wAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$watch`" --once" -WorkingDirectory $dir
 $wStart = Get-Date "2026-12-17 06:00:00"
