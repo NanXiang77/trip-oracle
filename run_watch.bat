@@ -7,8 +7,13 @@ REM NOTE: keep this file ASCII-only - cmd.exe parses it as GBK before chcp appli
 chcp 65001 >nul
 cd /d "%~dp0"
 if not exist data mkdir data
+
+REM Task Scheduler has a different PATH: bare "python" may hit the Store stub.
+set "PYEXE=C:\Users\Nan\.workbuddy\binaries\python\versions\3.13.12\python.exe"
+if not exist "%PYEXE%" set "PYEXE=python"
+
 if /I "%1"=="--status" (
-    python -m trip_oracle.watch %*
+    "%PYEXE%" -m trip_oracle.watch %*
 ) else (
-    python -m trip_oracle.watch %* >> data\watch.log 2>&1
+    "%PYEXE%" -m trip_oracle.watch %* >> data\watch.log 2>&1
 )
