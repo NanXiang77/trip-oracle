@@ -776,16 +776,6 @@ PAGE = """<!doctype html>
   </div>
 
   <div class="panel">
-    <h3 style="margin:0 0 8px;font-size:15px">说出你的意向 · 我来算账</h3>
-    <form id="cf" style="margin-bottom:6px">
-      <input id="ctext" placeholder="例如：两天，600 块，想看雪 ｜ 或：元旦去长白山挤吗" style="flex:1;min-width:240px">
-      <button>发送</button>
-    </form>
-    <div id="chatReply" style="white-space:pre-wrap;font-size:13px;line-height:1.7"></div>
-    <div class="cards" id="chatCards" style="margin-top:12px"></div>
-  </div>
-
-  <div class="panel">
     <form id="f">
       <select id="days"><option value="2">2 天</option><option value="1">当天</option><option value="3">3 天</option></select>
       <select id="pref"><option value="">不限偏好</option><option value="自然">自然</option>
@@ -1093,25 +1083,6 @@ document.getElementById('dirToggle').addEventListener('click',()=>{
   tkDir=tkDir==='out'?'return':'out';
   document.getElementById('dirToggle').textContent=tkDir==='out'?'去程':'回程';
   loadTickets(tkDest,tkDate,tkDir);
-});
-/* ---- 意向对话 ---- */
-document.getElementById('cf').addEventListener('submit',async e=>{
-  e.preventDefault();
-  const t=document.getElementById('ctext').value.trim();
-  if(!t)return;
-  const el=document.getElementById('chatReply');
-  el.innerHTML='<span style="color:var(--sub)">查询中…</span>';
-  const v=await (await fetch('/api/chat?text='+encodeURIComponent(t))).json();
-  el.innerHTML=(v.reply||'').replace(/\\*\\*(.+?)\\*\\*/g,'<b>$1</b>');
-  document.getElementById('chatCards').innerHTML=(v.items||[]).map((x,i)=>`
-    <div class="card">
-      <h3>${i+1}. ${x.name} <span class="tag">${x.level_text}</span></h3>
-      <div class="row"><span>拥挤指数</span><b>${x.crowd.toFixed(2)}</b></div>
-      <div class="row"><span>预计花费</span><b class="${x.within_budget?'':'bad'}">¥${x.cost}</b></div>
-      <div class="row" style="font-size:11px"><span>车票/住宿/餐饮</span>
-        <b>¥${x.cost_detail.transport}/¥${x.cost_detail.stay}/¥${x.cost_detail.food}</b></div>
-      <div class="row"><span>天气</span><b>${x.weather}</b></div>
-    </div>`).join('');
 });
 load();
 loadHeat(new URLSearchParams(location.search).get('date'));

@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import shutil
 import sys
 import threading
 import time
+import urllib.request
 
 import collect
 import tool_api
@@ -32,6 +34,9 @@ from trip_oracle import store
 TZ = dt.timezone(dt.timedelta(hours=8))          # 固定东八区，不依赖容器 tzdata
 COLLECT_HOURS = [int(h) for h in os.environ.get("COLLECT_HOURS", "8,20").split(",")]
 STALE_HOURS = float(os.environ.get("STALE_HOURS", "6"))
+# 数据库同步：本机采集完把库推到公开地址，云端每次唤醒时拉一次
+DB_SYNC_URL = os.environ.get("DB_SYNC_URL", "")
+DB_SYNC_MIN_H = float(os.environ.get("DB_SYNC_MIN_H", "2"))
 # 定时采集的最小间隔：库里数据比这更新就跳过（防止同一时段被重复唤醒后重复采）
 MIN_GAP_H = float(os.environ.get("MIN_GAP_H", "3"))
 
@@ -49,6 +54,46 @@ def _run_collect(reason: str) -> None:
         print(f"[collect] done rc={rc} in {time.time() - t0:.0f}s", flush=True)
     except Exception as e:                       # 采集失败不能拖垮 API
         print(f"[collect] FAILED: {e!r}", flush=True)
+
+
+def sync_db(reason: str = "boot") -> None:
+    """从公开地址拉最新 SQLite 库并原子替换。
+
+    为什么这么做：免费实例 15 分钟无访问就休眠，云端自己既采不到热度
+    （需要浏览器 cookie），也会因为休眠错过采集时点。回到本源——本机采集最全，
+    每天采集完把库 push 上去，云端每次被唤醒时拉一次，于是
+    「华为云来查询 → 唤醒 → 数据已经是新的」，不需要保活、不烧运行时长。
+    """
+    if not DB_SYNC_URL:
+        return
+    target = store.DB_PATH
+    if os.path.exists(target):
+        age_h = (time.time() - os.path.getmtime(target)) / 3600
+        if age_h < DB_SYNC_MIN_H:
+            print(f"[sync] skip ({reason}) — db {age_h:.1f}h old", flush=True)
+            return
+    tmp = target + ".download"
+    try:
+        req = urllib.request.Request(DB_SYNC_URL, headers={"User-Agent": "trip-oracle-sync"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=90) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        import sqlite3
+        c = sqlite3.connect(tmp)
+        rows = c.execute("select count(*) from train_daily").fetchone()[0]
+        latest = c.execute("select max(fetched_at) from train_daily").fetchone()[0]
+        c.close()
+        if not rows:
+            raise ValueError("downloaded db has no train_daily rows")
+        os.replace(tmp, target)
+        print(f"[sync] db updated ({reason}) rows={rows} latest={latest}", flush=True)
+    except Exception as e:
+        print(f"[sync] failed ({reason}): {e!r}", flush=True)
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _stale() -> bool:
@@ -81,9 +126,14 @@ def scheduler() -> None:
     if os.environ.get("CATCHUP_ON_BOOT") == "1" and _stale():
         _run_collect("startup, data is stale")
     done: set[str] = set()
+    last_sync = time.time()
     while True:
         now = dt.datetime.now(TZ)
         key = now.strftime("%Y-%m-%d %H")
+        # 容器若长时间不睡，每小时也补一次库同步（sync_db 内部按 mtime 节流）
+        if DB_SYNC_URL and time.time() - last_sync > 3600:
+            last_sync = time.time()
+            sync_db("hourly")
         if now.hour in COLLECT_HOURS and key not in done:
             done.add(key)
             # 免费实例会被外部 ping 反复唤醒，同一小时内可能启动多次。
@@ -117,6 +167,9 @@ def start_dashboard() -> None:
 def main() -> None:
     print(f"[boot] tz=UTC+8 hours={COLLECT_HOURS} skips_heat={os.environ.get('SKIP_HEAT') == '1'} "
           f"latest={_latest_snapshot() or 'empty'}", flush=True)
+    # 先起服务再同步库：下载 11MB 可能要十几秒，不能挡住健康检查
+    if DB_SYNC_URL:
+        threading.Thread(target=sync_db, args=("boot",), daemon=True).start()
     if os.environ.get("ENABLE_DASHBOARD", "1") != "0":
         start_dashboard()
     if os.environ.get("ENABLE_SCHEDULER", "1") != "0":
