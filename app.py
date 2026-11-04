@@ -765,6 +765,7 @@ PAGE = """<!doctype html>
       <span style="margin-left:10px;font-weight:400;font-size:12px;color:var(--sub)">
         选城市 → 选日期 → 看具体车次</span>
       <button type="button" id="dirToggle" style="margin-left:12px;font-size:12px">去程</button>
+      <button type="button" class="daybtn" id="refreshBtn2" onclick="doRefresh()" style="margin-left:8px;padding:3px 9px">↻ 刷新12306</button>
     </h3>
     <div class="chipbar" id="tkChips" style="margin-bottom:8px"></div>
     <div id="tkDays" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
@@ -1114,21 +1115,26 @@ load();
 loadHeat(new URLSearchParams(location.search).get('date'));
 loadTickets();
 let refTimer=null;
+function setRefButtons(txt,dis){
+  for(const id of ['refreshBtn','refreshBtn2']){
+    const b=document.getElementById(id);
+    if(b){b.disabled=dis;b.textContent=txt;}
+  }
+}
 async function doRefresh(){
-  const b=document.getElementById('refreshBtn');
-  if(b.disabled)return;
+  if(refTimer)return;
   await (await fetch('/api/refresh')).json();
-  b.disabled=true;
+  setRefButtons('采集中…',true);
   const t0=Date.now();
-  b.textContent='采集中…';
   refTimer=setInterval(async()=>{
     const s=await (await fetch('/api/refresh/status')).json();
-    b.textContent='采集中 '+Math.round((Date.now()-t0)/1000)+'s';
+    setRefButtons('采集中 '+Math.round((Date.now()-t0)/1000)+'s',true);
     if(!s.running){
       clearInterval(refTimer);refTimer=null;
-      b.disabled=false;b.textContent='↻ 刷新12306';
+      setRefButtons('↻ 刷新12306',false);
       if(s.ok===false){alert('刷新失败：'+(s.detail||'').slice(-200));}
       await load();
+      loadTickets();
     }
   },4000);
 }
