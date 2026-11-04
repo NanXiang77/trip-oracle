@@ -13,5 +13,5 @@ COPY . /app
 # 纯标准库，无需 pip install；如需百度指数可自行加 qdata
 RUN python -c "import sqlite3; print('sqlite ok')"
 
-EXPOSE 8080
+EXPOSE 8901
 CMD ["python", "cloud_run.py"]

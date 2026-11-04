@@ -58,7 +58,10 @@ def _stale() -> bool:
 
 
 def scheduler() -> None:
-    if _stale():
+    # 免费实例冷启动有几十秒窗口，若在此窗口内启动补采，健康检查会一直过不了、
+    # 容器永远停留在 "waking up"。默认关闭启动补采（余票数据随镜像自带、热度走本机推送），
+    # 只有显式设 CATCHUP_ON_BOOT=1 才补采。
+    if os.environ.get("CATCHUP_ON_BOOT") == "1" and _stale():
         _run_collect("startup, data is stale")
     done: set[str] = set()
     while True:
