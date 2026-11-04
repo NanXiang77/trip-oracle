@@ -295,13 +295,17 @@ class Handler(BaseHTTPRequestHandler):
     def _mcp_respond(self, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         if "text/event-stream" in (self.headers.get("Accept") or ""):
+            # 注意：Content-Length 必须是完整帧的字节数（含 "event: message\ndata: " 与结尾 "\n\n"）。
+            # 之前写死 +22 而实际是 +23，差 1 字节会让严格的客户端（如 httpx/MCP SDK）
+            # 永远读不满一个 SSE 帧，表现为 "Failed to determine MCP transport type"。
+            frame = b"event: message\ndata: " + body + b"\n\n"
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Content-Length", str(len(body) + 22))
+            self.send_header("Content-Length", str(len(frame)))
             self.end_headers()
-            self.wfile.write(b"event: message\ndata: " + body + b"\n\n")
+            self.wfile.write(frame)
         else:
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
