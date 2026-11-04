@@ -64,7 +64,10 @@ def push(url: str, token: str, rows: list[dict], timeout: int = 60) -> dict:
                       ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url.rstrip("/") + "/ingest/heat", data=body, method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}",
+                 # Cloudflare 会拦截 Python-urllib 默认签名（403 error 1010），伪装成正常客户端
+                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) trip-oracle-push/1.0",
+                 "Accept": "application/json"})
     # 显式绕过系统代理：本机/局域网地址走代理会直接 502
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(req, timeout=timeout) as r:
