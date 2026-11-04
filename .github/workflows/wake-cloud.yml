@@ -1,0 +1,42 @@
+name: wake-cloud
+
+# 作用：在每天 08:00 和 20:00（北京时间）ping 一下云端 /health，
+# 把免费实例从休眠中叫醒，让容器里的采集闹钟能正常触发。
+#
+# 为什么用 GitHub Actions 而不是 cron-job.org：
+#   · 不需要额外注册账号
+#   · 免费额度足够（每天 2 次，公共仓库不计费）
+#   · 时间可以精确指定
+#
+# 注意：GitHub 的定时任务在高峰期可能延迟几分钟到十几分钟，这不影响结果——
+# 云端调度器在整个小时内的任意时刻醒来都会触发当天那一轮采集。
+
+on:
+  schedule:
+    # GitHub 的 cron 用 UTC：00:00 UTC = 08:00 北京，12:00 UTC = 20:00 北京
+    - cron: '0 0,12 * * *'
+  workflow_dispatch:      # 也可以在 Actions 页面手动点一次
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /health (wake the container)
+        run: |
+          URL="https://trip-oracle-dcf89.containers.snapdeploy.app/health"
+          echo "::group::唤醒 $URL"
+          # 冷启动要 30~60 秒，多试几次，别被超时误判
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' -m 45 "$URL" || true)
+            echo "第 $i 次：HTTP $code"
+            if [ "$code" = "200" ] && head -c 1 /tmp/health.json | grep -q '{'; then
+              echo "已唤醒，最新快照：$(python3 -c "import json;print(json.load(open('/tmp/health.json')).get('latest_snapshot'))" 2>/dev/null || echo '?')"
+              echo "::endgroup::"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::云端连续 5 次未就绪，可能是部署中或冷启动失败"
+          echo "::endgroup::"
+          exit 1
