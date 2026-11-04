@@ -97,9 +97,28 @@ def scheduler() -> None:
         time.sleep(60)
 
 
+def start_dashboard() -> None:
+    """在内部端口跑看板，供 tool_api 把 / 与 /api/* 反向代理过去。
+
+    云端只暴露一个端口，所以看板不能自己监听公网，只能挂在 127.0.0.1 上，
+    由 tool_api 按路径转发。
+    """
+    try:
+        os.environ.setdefault("DASHBOARD_PORT", "8900")
+        os.environ.setdefault("DASHBOARD_HOST", "127.0.0.1")
+        os.environ.setdefault("DASHBOARD_OPEN_BROWSER", "0")
+        import app as dashboard          # 延迟 import：PORT 在模块加载时读环境变量
+        threading.Thread(target=dashboard.main, daemon=True).start()
+        print(f"[dash] dashboard on 127.0.0.1:{dashboard.PORT}", flush=True)
+    except Exception as e:
+        print(f"[dash] failed to start: {e!r}", flush=True)
+
+
 def main() -> None:
     print(f"[boot] tz=UTC+8 hours={COLLECT_HOURS} skips_heat={os.environ.get('SKIP_HEAT') == '1'} "
           f"latest={_latest_snapshot() or 'empty'}", flush=True)
+    if os.environ.get("ENABLE_DASHBOARD", "1") != "0":
+        start_dashboard()
     if os.environ.get("ENABLE_SCHEDULER", "1") != "0":
         threading.Thread(target=scheduler, daemon=True).start()
     tool_api.main()

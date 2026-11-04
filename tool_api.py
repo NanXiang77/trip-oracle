@@ -29,7 +29,9 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -265,6 +267,9 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     return self._send(400, {"error": f"参数 {k} 类型应为 {t}"})
             return self._send(200, agent.run_tool(name, args))
+        # 看板页面与它的接口：/、/dashboard、/api/* 交给内部 app.py
+        if path in ("/", "/dashboard") or path.startswith("/api/"):
+            return self._proxy_dashboard()
         return self._send(404, {"error": "not found", "path": u.path})
 
     def _accept202(self) -> None:
@@ -272,6 +277,41 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
+
+    def _proxy_dashboard(self) -> None:
+        """把看板请求转发给内部 app.py。
+
+        云端（SnapDeploy 等）只暴露一个端口，所以看板不能自己对外，
+        由这里按路径转发：/、/dashboard、/api/*  →  127.0.0.1:8900
+        """
+        base = os.environ.get("DASHBOARD_INTERNAL", "http://127.0.0.1:8900")
+        path = self.path
+        if path == "/dashboard" or path.startswith("/dashboard?"):
+            path = "/"                        # 别名：/dashboard 等价于看板首页
+        url = base.rstrip("/") + path
+        data = None
+        headers = {"User-Agent": "trip-oracle-internal"}
+        if self.command == "POST":
+            n = int(self.headers.get("Content-Length") or 0)
+            data = self.rfile.read(n) if n else b""
+            headers["Content-Type"] = self.headers.get("Content-Type") or "application/json"
+        try:
+            req = urllib.request.Request(url, data=data, headers=headers, method=self.command)
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(req, timeout=30) as r:
+                data = r.read()
+                self.send_response(r.status)
+                ct = r.headers.get("Content-Type")
+                if ct:
+                    self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+        except urllib.error.HTTPError as e:
+            self._send(e.code, {"error": "dashboard upstream error", "status": e.code})
+        except Exception as e:
+            self._send(502, {"error": f"dashboard unavailable: {type(e).__name__}"})
 
     def _mcp_sse_probe(self) -> None:
         """响应 GET /mcp：开一条短命的 SSE 流，用于平台识别 transport type。"""
@@ -356,6 +396,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path.startswith("/api/"):      # 看板的 POST 接口（如 /api/refresh）
+            return self._proxy_dashboard()
         if u.path.rstrip("/") == "/mcp":
             return self._handle_mcp()
         if u.path.rstrip("/") == "/ingest/heat":

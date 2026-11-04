@@ -19,7 +19,9 @@ from trip_oracle import analyze, store
 from trip_oracle.collectors import weather as weather_mod
 from trip_oracle.config import DESTINATIONS, FORECAST_DAYS
 
-PORT = 8901
+PORT = int(os.environ.get("DASHBOARD_PORT") or "8901")
+HOST = os.environ.get("DASHBOARD_HOST") or "127.0.0.1"
+OPEN_BROWSER = (os.environ.get("DASHBOARD_OPEN_BROWSER") or "1") == "1"
 
 # 票价基准（二等座/硬座，元）——后续可换成实时查询，这里先用人工基准保证演示可用
 PRICE = {"吉林市": 40, "四平": 30, "沈阳": 110, "哈尔滨": 210, "延吉": 165, "长白山": 150}
@@ -1234,9 +1236,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     store.init_db()
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"看板已启动： http://127.0.0.1:{PORT}   (Ctrl+C 退出)")
-    threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{PORT}")).start()
+    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"看板已启动： http://{HOST}:{PORT}   (Ctrl+C 退出)")
+    if OPEN_BROWSER:
+        threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{PORT}")).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
