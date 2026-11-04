@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -222,8 +223,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/health":
             return self._send(200, health())
-        if path == "/mcp":                   # Streamable HTTP：只收 POST
-            return self._send(405, {"error": "MCP endpoint: use POST with JSON-RPC 2.0"})
+        if path == "/mcp":
+            # MCP Streamable HTTP 的可选 SSE 通道。部分平台（如华为云 AgentArts）
+            # 靠 GET 探测 transport type，收到 405 会报 "Failed to determine MCP
+            # transport type"，所以这里返回一个合法的事件流而不是拒绝。
+            return self._mcp_sse_probe()
         if path == "/openapi.json":
             return self._send(200, openapi_doc())
         if path == "/tools":
@@ -269,6 +273,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
+    def _mcp_sse_probe(self) -> None:
+        """响应 GET /mcp：开一条短命的 SSE 流，用于平台识别 transport type。"""
+        print(f"[mcp] GET probe accept={self.headers.get('Accept','')!r} "
+              f"ua={(self.headers.get('User-Agent') or '')[:70]!r}", flush=True)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b": mcp stream ready\n\n")
+            self.wfile.flush()
+            time.sleep(1.0)
+            self.wfile.write(b"event: ping\ndata: {\"jsonrpc\":\"2.0\"}\n\n")
+            self.wfile.flush()
+        except Exception:
+            pass
+
     def _mcp_respond(self, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         if "text/event-stream" in (self.headers.get("Accept") or ""):
@@ -289,9 +312,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_mcp(self) -> None:
         if not self._auth_ok():
+            print(f"[mcp] POST 401 accept={self.headers.get('Accept','')!r} "
+                  f"ua={(self.headers.get('User-Agent') or '')[:70]!r}", flush=True)
             return self._send(401, {"error": "unauthorized"})
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b""
+        print(f"[mcp] POST accept={self.headers.get('Accept','')!r} "
+              f"ct={self.headers.get('Content-Type','')!r} "
+              f"ua={(self.headers.get('User-Agent') or '')[:70]!r} "
+              f"body={raw[:160]!r}", flush=True)
         try:
             msg = json.loads(raw.decode("utf-8") or "{}")
         except ValueError:
