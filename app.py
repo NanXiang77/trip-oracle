@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -717,7 +720,10 @@ PAGE = """<!doctype html>
     <div id="tkChartWrap" style="margin:0 0 4px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <div class="note" style="margin:0" id="tkChartTitle">余票走势 · 每个城市每天「售罄车次占比」（越高越难买）</div>
-        <button type="button" class="daybtn" id="tkMetric" style="padding:3px 9px;margin:0">指标：售罄率</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button type="button" class="daybtn" id="refreshBtn" onclick="doRefresh()" style="padding:3px 9px;margin:0">↻ 刷新12306</button>
+          <button type="button" class="daybtn" id="tkMetric" style="padding:3px 9px;margin:0">指标：售罄率</button>
+        </div>
       </div>
       <div style="position:relative;height:220px;margin-top:6px">
         <canvas id="tkChart" role="img" aria-label="各目的地每日售罄车次占比走势">余票走势图</canvas>
@@ -1107,8 +1113,63 @@ document.getElementById('cf').addEventListener('submit',async e=>{
 load();
 loadHeat(new URLSearchParams(location.search).get('date'));
 loadTickets();
+let refTimer=null;
+async function doRefresh(){
+  const b=document.getElementById('refreshBtn');
+  if(b.disabled)return;
+  await (await fetch('/api/refresh')).json();
+  b.disabled=true;
+  const t0=Date.now();
+  b.textContent='采集中…';
+  refTimer=setInterval(async()=>{
+    const s=await (await fetch('/api/refresh/status')).json();
+    b.textContent='采集中 '+Math.round((Date.now()-t0)/1000)+'s';
+    if(!s.running){
+      clearInterval(refTimer);refTimer=null;
+      b.disabled=false;b.textContent='↻ 刷新12306';
+      if(s.ok===false){alert('刷新失败：'+(s.detail||'').slice(-200));}
+      await load();
+    }
+  },4000);
+}
 </script></body></html>
 """
+
+
+# ---- 手动刷新：页面按钮触发一次快速采集（今天+明天余票 + 天气，约 1~2 分钟）----
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_REFRESH: dict = {"running": False, "started": "", "finished": "", "ok": None,
+                  "seconds": 0.0, "detail": ""}
+_RLOCK = threading.Lock()
+
+
+def _refresh_worker():
+    t0 = time.time()
+    env = dict(os.environ, COLLECT_DAYS="2", SKIP_HEAT="1", SKIP_DOUYIN="1")
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(APP_DIR, "collect.py")],
+            cwd=APP_DIR, env=env, capture_output=True, text=True, timeout=420)
+        ok = proc.returncode == 0
+        detail = (proc.stdout or "")[-300:] if ok else \
+            ((proc.stderr or proc.stdout or "")[-500:])
+    except Exception as e:  # 超时或其他异常
+        ok, detail = False, repr(e)
+    with _RLOCK:
+        _REFRESH.update(running=False, ok=ok, detail=detail,
+                        seconds=round(time.time() - t0, 1),
+                        finished=datetime.now().strftime("%m-%d %H:%M:%S"))
+
+
+def refresh_start() -> dict:
+    with _RLOCK:
+        if _REFRESH["running"]:
+            return dict(_REFRESH)
+        _REFRESH.update(running=True, ok=None, detail="", finished="",
+                        seconds=0.0,
+                        started=datetime.now().strftime("%m-%d %H:%M:%S"))
+        threading.Thread(target=_refresh_worker, daemon=True).start()
+        return dict(_REFRESH)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1157,6 +1218,11 @@ class Handler(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(u.query)
             return self._send(200, json.dumps(
                 chat_reply((q.get("text") or [""])[0]), ensure_ascii=False))
+        if u.path == "/api/refresh":
+            return self._send(200, json.dumps(refresh_start(), ensure_ascii=False))
+        if u.path == "/api/refresh/status":
+            with _RLOCK:
+                return self._send(200, json.dumps(dict(_REFRESH), ensure_ascii=False))
         self._send(404, json.dumps({"error": "not found"}))
 
 
