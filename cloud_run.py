@@ -11,6 +11,7 @@
     ENABLE_SCHEDULER     1=开启定时采集（默认 1），0=只提供 API
     COLLECT_HOURS        采集小时，默认 "8,20"
     MIN_GAP_H            距上次采集不足这么多小时就跳过本次，默认 3
+    WAKE_COLLECT_H       被唤醒时若数据超过这么多小时，后台补采一轮，默认 6（0=关闭）
     STALE_HOURS          启动补采阈值（仅 CATCHUP_ON_BOOT=1 时生效），默认 6
     CATCHUP_ON_BOOT      1=启动时若数据过期先补采（免费实例上会拖慢唤醒，默认关）
     SKIP_HEAT            1=跳过百度/抖音指数（云端默认建议开，因为没有浏览器 cookie）
@@ -39,6 +40,8 @@ DB_SYNC_URL = os.environ.get("DB_SYNC_URL", "")
 DB_SYNC_MIN_H = float(os.environ.get("DB_SYNC_MIN_H", "2"))
 # 定时采集的最小间隔：库里数据比这更新就跳过（防止同一时段被重复唤醒后重复采）
 MIN_GAP_H = float(os.environ.get("MIN_GAP_H", "3"))
+# 唤醒补采：被外部叫醒时若数据已超过这么多小时，顺手在后台采一轮（0=关闭）
+WAKE_COLLECT_H = float(os.environ.get("WAKE_COLLECT_H", "6"))
 
 
 def _latest_snapshot() -> str:
@@ -125,6 +128,9 @@ def scheduler() -> None:
     # 只有显式设 CATCHUP_ON_BOOT=1 才补采。
     if os.environ.get("CATCHUP_ON_BOOT") == "1" and _stale():
         _run_collect("startup, data is stale")
+    elif WAKE_COLLECT_H > 0 and not _fresh(WAKE_COLLECT_H):
+        # 被外部叫醒时顺手补采：数据已经旧了，边接客边采，不挡接口
+        _run_collect(f"wake, data older than {WAKE_COLLECT_H:g}h")
     done: set[str] = set()
     last_sync = time.time()
     while True:
