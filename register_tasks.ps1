@@ -31,6 +31,9 @@ Register-DailyCollect -Name "TripOracle-Collect-08" -At "08:00" -Mode "fast" `
 # Evening: full 8-day window + heat index + push (~5 min, nobody is waiting).
 Register-DailyCollect -Name "TripOracle-Collect-20" -At "20:00" `
     -Desc "trip-oracle: full collect (8 days + heat) at 20:00"
+# Midday: yesterday's baidu/douyin index publishes during the day; catch it at 12:30.
+Register-DailyCollect -Name "TripOracle-Collect-1230" -At "12:30" -Mode "heat" `
+    -Desc "trip-oracle: midday heat catch-up (1 day + heat + push) at 12:30"
 
 # Services: start dashboard (8901) + tool API (8910) at logon, no time limit.
 $sSvc = Join-Path $dir "start_services.bat"
