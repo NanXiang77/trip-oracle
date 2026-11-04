@@ -1,3 +1,14 @@
+---
+title: 周末去哪
+emoji: 🚄
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 8901
+pinned: false
+short_description: 长春周边 6 城拥挤度与花费，只依据 12306 余票等真实数据作答
+---
+
 # 周末去哪 · 周边拥挤度预测（trip-oracle）
 
 面向**大学生短途出行**的决策助手原型：从长春出发，预测周边 6 个目的地未来 8 天"挤不挤、花多少、值不值"。

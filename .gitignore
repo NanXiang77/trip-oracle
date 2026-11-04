@@ -10,6 +10,7 @@ data/douyin_profile/
 data/*.log
 data/baidu_cookie.txt
 data/cloud.json
+data/hf.json
 dist/
 *.zip
 # 本地临时
