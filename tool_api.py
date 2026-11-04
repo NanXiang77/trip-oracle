@@ -99,7 +99,48 @@ def health() -> dict:
     rows = store.latest_train_daily()
     latest = max((r.get("fetched_at") or "" for r in rows), default="")
     return {"ok": True, "service": "trip-oracle-tools", "tools": list(agent.REGISTRY),
-            "latest_snapshot": latest, "auth": bool(TOKEN)}
+            "latest_snapshot": latest, "auth": bool(TOKEN), "mcp": "/mcp"}
+
+
+# ---- MCP（Streamable HTTP）：华为云 AgentArts 等平台通过 MCP 协议接入 ----
+# 协议：JSON-RPC 2.0，POST /mcp。支持 initialize / notifications/* / ping /
+# tools/list / tools/call。无会话状态（每次请求独立），支持 2025-03-26 与
+# 2025-06-18 两个协议版本。客户端 Accept 带 text/event-stream 时按 SSE 帧
+# 回复（event: message\ndata: {...}\n\n），否则直接回 application/json——
+# 两种都是 Streamable HTTP 允许的响应形态。
+MCP_PROTOCOLS = ("2025-03-26", "2025-06-18")
+
+
+def mcp_tools_list() -> dict:
+    tools = []
+    for spec in agent.TOOL_SPECS:
+        fn = spec["function"]
+        tools.append({"name": fn["name"], "description": fn["description"],
+                      "inputSchema": fn["parameters"]})
+    return {"tools": tools}
+
+
+def mcp_tools_call(params: dict) -> dict:
+    name = params.get("name")
+    args = params.get("arguments") or {}
+    if name not in agent.REGISTRY:
+        return {"content": [{"type": "text", "text": f"未知工具：{name}"}], "isError": True}
+    try:
+        out = agent.run_tool(name, args if isinstance(args, dict) else {})
+        return {"content": [{"type": "text",
+                             "text": json.dumps(out, ensure_ascii=False)}],
+                "isError": False}
+    except Exception as e:                   # 工具内部错误也走标准 content 返回
+        return {"content": [{"type": "text", "text": f"工具执行失败：{e}"}],
+                "isError": True}
+
+
+def _rpc(mid, result) -> dict:
+    return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+def _rpc_err(mid, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
 
 def ingest_heat(payload) -> tuple[int, dict]:
@@ -181,6 +222,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/health":
             return self._send(200, health())
+        if path == "/mcp":                   # Streamable HTTP：只收 POST
+            return self._send(405, {"error": "MCP endpoint: use POST with JSON-RPC 2.0"})
         if path == "/openapi.json":
             return self._send(200, openapi_doc())
         if path == "/tools":
@@ -220,8 +263,68 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, agent.run_tool(name, args))
         return self._send(404, {"error": "not found", "path": u.path})
 
+    def _accept202(self) -> None:
+        self.send_response(202)
+        self.send_header("Content-Length", "0")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+    def _mcp_respond(self, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if "text/event-stream" in (self.headers.get("Accept") or ""):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body) + 22))
+            self.end_headers()
+            self.wfile.write(b"event: message\ndata: " + body + b"\n\n")
+        else:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+    def _handle_mcp(self) -> None:
+        if not self._auth_ok():
+            return self._send(401, {"error": "unauthorized"})
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n) if n else b""
+        try:
+            msg = json.loads(raw.decode("utf-8") or "{}")
+        except ValueError:
+            return self._mcp_respond(_rpc_err(None, -32700, "Parse error"))
+        if isinstance(msg, list):            # 平台网关不支持批量，取首条即可
+            msg = msg[0] if msg else {}
+        if not isinstance(msg, dict):
+            return self._mcp_respond(_rpc_err(None, -32600, "Invalid Request"))
+        method = msg.get("method") or ""
+        mid = msg.get("id")
+        if method == "initialize":
+            ver = (msg.get("params") or {}).get("protocolVersion")
+            return self._mcp_respond(_rpc(mid, {
+                "protocolVersion": ver if ver in MCP_PROTOCOLS else MCP_PROTOCOLS[-1],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "trip-oracle", "version": "1.0.0"},
+                "instructions": "长春出发周边游数据工具集：12306 余票拥挤指数、"
+                                "花费估算、假期客流预测。全部只读，每次现场查库。",
+            }))
+        if method.startswith("notifications/"):
+            return self._accept202()
+        if method == "ping":
+            return self._mcp_respond(_rpc(mid, {}))
+        if method == "tools/list":
+            return self._mcp_respond(_rpc(mid, mcp_tools_list()))
+        if method == "tools/call":
+            return self._mcp_respond(_rpc(mid, mcp_tools_call(msg.get("params") or {})))
+        return self._mcp_respond(_rpc_err(mid, -32601, f"Method not found: {method}"))
+
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path.rstrip("/") == "/mcp":
+            return self._handle_mcp()
         if u.path.rstrip("/") == "/ingest/heat":
             if not self._auth_ok():
                 return self._send(401, {"error": "unauthorized"})
@@ -254,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"trip-oracle tools API → http://{HOST}:{PORT}")
-    print(f"  GET /health   GET /tools   GET /openapi.json")
+    print(f"  GET /health   GET /tools   GET /openapi.json   POST /mcp (MCP Streamable HTTP)")
     print(f"  POST /tools/<name>   （鉴权：{'开' if TOKEN else '关'}）")
     try:
         srv.serve_forever()
