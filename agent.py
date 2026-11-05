@@ -55,9 +55,10 @@ SYSTEM_PROMPT = """你是"周末去哪"，一位只依据真实数据说话的�
 TOOL_SPECS = [
     {"type": "function", "function": {
         "name": "get_crowd_matrix",
-        "description": "查询长春出发 6 个目的地未来若干天的拥挤指数、售罄车次、剩余座位与天气。",
+        "description": "查询长春出发 6 个目的地若干天的拥挤指数、售罄车次、剩余座位、天气与搜索热度。返回里带 today 和 date_range，回答时日期一律以此为准。用户想回看过去（前阵子、上周末、最近怎么样）时把 back_days 设成 7 或 14。",
         "parameters": {"type": "object", "properties": {
-            "days": {"type": "integer", "description": "查询天数，默认 8，最多 8"}}},
+            "days": {"type": "integer", "description": "往后看多少天，默认 8，最多 14"},
+            "back_days": {"type": "integer", "description": "往前回看多少天，默认 0；问过去的情况时设 7~14，可同时返回过去与未来"}}},
     }},
     {"type": "function", "function": {
         "name": "recommend_destinations",
@@ -108,8 +109,8 @@ KEYWORDS = {d["name"]: d["keywords"][0] if d.get("keywords") else d["name"]
 
 # ---------------- 工具实现（全部只读、秒回） ----------------
 
-def t_get_crowd_matrix(days: int = 8) -> dict:
-    return tools.tool_get_crowd_matrix(days=int(days))
+def t_get_crowd_matrix(days: int = 8, back_days: int = 0) -> dict:
+    return tools.tool_get_crowd_matrix(days=int(days), back_days=int(back_days or 0))
 
 
 def t_recommend(days: int = 2, budget: int = 600, pref: str = "") -> dict:

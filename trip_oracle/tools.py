@@ -17,10 +17,42 @@ TAGS = {d["name"]: d["tags"] for d in DESTINATIONS}
 DAYS = {d["name"]: d["days"] for d in DESTINATIONS}
 
 
-def tool_get_crowd_matrix(days: int = 8) -> dict:
-    """返回目的地 × 日期的拥挤度矩阵（含天气，去/回程取更紧一侧）。"""
+def tool_get_crowd_matrix(days: int = 8, back_days: int = 0) -> dict:
+    """返回目的地 × 日期的拥挤度矩阵（含天气与搜索热度，去/回程取更紧一侧）。
+
+    参数
+      days      往后看多少天（默认 8）
+      back_days 往前回看多少天（默认 0；设 7 就能连同过去一周一起返回）
+
+    为什么要把 today 和 date_range 直接写进返回值：
+      模型（尤其轻量模型）从 JSON 的 dates 数组里推"今天是几号"经常算错，
+      实测出现过把 11-05~11-12 说成 11-02~11-09 的情况。与其让它推，不如直接给结论。
+    """
+    from datetime import date as _date, datetime, timedelta, timezone
+    TZ = timezone(timedelta(hours=8))
+    today = datetime.now(TZ).date()
+
     rows = store.latest_train_daily()
     wx = {(w["dest"], w["date"]): w for w in store.latest_weather()}
+
+    # 每个目的地的最新搜索热度（百度 + 抖音），按日期取最新一行
+    heat: dict[str, dict] = {}
+    for src, key in (("baidu_index", "heat_baidu"), ("douyin_index", "heat_douyin")):
+        try:
+            latest_by_dest: dict[str, dict] = {}
+            for h in store.latest_heat(src):
+                d = h.get("dest")
+                if not d:
+                    continue
+                prev = latest_by_dest.get(d)
+                if prev is None or (h.get("date") or "") >= (prev.get("date") or ""):
+                    latest_by_dest[d] = h
+            for d, h in latest_by_dest.items():
+                heat.setdefault(d, {})[key] = h.get("heat")
+                heat[d][key + "_date"] = h.get("date")
+        except Exception:
+            pass
+
     grouped: dict[tuple[str, str], list[dict]] = {}
     for r in rows:
         grouped.setdefault((r["dest"], r["travel_date"]), []).append(r)
@@ -32,6 +64,7 @@ def tool_get_crowd_matrix(days: int = 8) -> dict:
             continue
         idx, worst = max(idxs, key=lambda x: x[0])
         w = wx.get((dest, d)) or {}
+        h = heat.get(dest) or {}
         cells.append({
             "dest": dest,
             "date": d,
@@ -45,9 +78,25 @@ def tool_get_crowd_matrix(days: int = 8) -> dict:
             "weather": w.get("weathercode"),
             "tmax": w.get("tmax"),
             "rain_prob": w.get("precip_prob"),
+            "heat_baidu": h.get("heat_baidu"),
+            "heat_douyin": h.get("heat_douyin"),
         })
-    dates = sorted({c["date"] for c in cells})[:days]
-    return {"dates": dates, "cells": [c for c in cells if c["date"] in dates]}
+
+    all_dates = sorted({c["date"] for c in cells})
+    start = today - timedelta(days=max(0, int(back_days)))
+    end = today + timedelta(days=max(1, int(days)))
+    picked = [d for d in all_dates if start <= _date.fromisoformat(d) <= end]
+
+    span = f"{picked[0]} 至 {picked[-1]}" if picked else "无"
+    return {
+        "today": today.isoformat(),
+        "date_range": span,
+        "note": (f"今天是 {today.isoformat()}。本次返回的日期范围是 {span}，"
+                 "共 " + str(len(picked)) + " 天。回答里所有日期必须原样使用这里列出的值，"
+                 "不要自行推算、加减或改写。"),
+        "dates": picked,
+        "cells": [c for c in cells if c["date"] in picked],
+    }
 
 
 def tool_recommend(days: int = 2, budget: int = 600, pref: str = "") -> dict:
