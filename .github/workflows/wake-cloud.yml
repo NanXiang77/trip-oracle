@@ -1,42 +1,69 @@
 name: wake-cloud
 
-# 作用：在每天 08:00 和 20:00（北京时间）ping 一下云端 /health，
-# 把免费实例从休眠中叫醒，让容器里的采集闹钟能正常触发。
+# 作用：每天 08:00 和 20:00（北京时间）把云端容器拉起来并确认可用。
 #
-# 为什么用 GitHub Actions 而不是 cron-job.org：
-#   · 不需要额外注册账号
-#   · 免费额度足够（每天 2 次，公共仓库不计费）
-#   · 时间可以精确指定
+# 为什么不能只 ping /health：
+#   免费档的容器有两种停法——
+#     Sleeping（自动休眠）→ 有请求就会自己启动，ping 有效
+#     Stopped（深度停止）→ 外部请求一律 503，ping 永远叫不醒
+#   所以必须调用 SnapDeploy 的启动接口（POST /containers/{id}/start），
+#   它对接 Stopped 状态同样有效。
 #
-# 注意：GitHub 的定时任务在高峰期可能延迟几分钟到十几分钟，这不影响结果——
-# 云端调度器在整个小时内的任意时刻醒来都会触发当天那一轮采集。
+# 需要的仓库 Secrets（Settings → Secrets and variables → Actions）：
+#   SNAPDEPLOY_API_KEY       sd_pat_... 开头的 token（scope: deploy 或 manage）
+#   SNAPDEPLOY_CONTAINER_ID  容器 id，见 snapdeploy.dev 容器详情或 API list
+#
+# 注意：GitHub 的 cron 用 UTC。00:00 UTC = 08:00 北京，12:00 UTC = 20:00 北京。
+# 高峰期可能延迟几分钟，不影响结果——容器醒来后 WAKE_COLLECT_H
+# 会判断数据是否过期并后台补采。
 
 on:
   schedule:
-    # GitHub 的 cron 用 UTC：00:00 UTC = 08:00 北京，12:00 UTC = 20:00 北京
     - cron: '0 0,12 * * *'
-  workflow_dispatch:      # 也可以在 Actions 页面手动点一次
+  workflow_dispatch:
 
 jobs:
-  ping:
+  wake:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
+    env:
+      HEALTH_URL: https://trip-oracle-dcf89.containers.snapdeploy.app/health
+      API_BASE: https://snapdeploy.dev/api/mobile
     steps:
-      - name: Ping /health (wake the container)
+      - name: Start container (works even when Stopped)
+        env:
+          KEY: ${{ secrets.SNAPDEPLOY_API_KEY }}
+          CID: ${{ secrets.SNAPDEPLOY_CONTAINER_ID }}
         run: |
-          URL="https://trip-oracle-dcf89.containers.snapdeploy.app/health"
-          echo "::group::唤醒 $URL"
-          # 冷启动要 30~60 秒，多试几次，别被超时误判
-          for i in 1 2 3 4 5; do
-            code=$(curl -s -o /tmp/health.json -w '%{http_code}' -m 45 "$URL" || true)
+          if [ -z "$KEY" ] || [ -z "$CID" ]; then
+            echo "::warning::缺少 SNAPDEPLOY_API_KEY 或 SNAPDEPLOY_CONTAINER_ID，跳过 start，只做轮询"
+            exit 0
+          fi
+          echo "::group::POST /containers/$CID/start"
+          # 402 = 免费时长用完；403 = token 权限不足；都如实打印，不重试
+          code=$(curl -s -o /tmp/start.json -w '%{http_code}' -m 45 \
+                 -X POST "$API_BASE/containers/$CID/start" \
+                 -H "Authorization: Bearer $KEY" \
+                 -H 'Content-Type: application/json' || true)
+          echo "HTTP $code"
+          head -c 400 /tmp/start.json 2>/dev/null || true
+          echo "::endgroup::"
+          if [ "$code" = "402" ]; then
+            echo "::error::免费运行时长已用完（402），需要等下个计费周期"
+            exit 1
+          fi
+
+      - name: Wait until /health answers with JSON
+        run: |
+          for i in $(seq 1 14); do
+            code=$(curl -s -o /tmp/h.json -w '%{http_code}' -m 40 "$HEALTH_URL" || true)
+            first=$(head -c 1 /tmp/h.json 2>/dev/null || echo '')
             echo "第 $i 次：HTTP $code"
-            if [ "$code" = "200" ] && head -c 1 /tmp/health.json | grep -q '{'; then
-              echo "已唤醒，最新快照：$(python3 -c "import json;print(json.load(open('/tmp/health.json')).get('latest_snapshot'))" 2>/dev/null || echo '?')"
-              echo "::endgroup::"
+            if [ "$code" = "200" ] && [ "$first" = "{" ]; then
+              echo "已就绪，最新快照：$(python3 -c "import json;print(json.load(open('/tmp/h.json')).get('latest_snapshot'))" 2>/dev/null || echo '?')"
               exit 0
             fi
-            sleep 20
+            sleep 15
           done
-          echo "::error::云端连续 5 次未就绪，可能是部署中或冷启动失败"
-          echo "::endgroup::"
+          echo "::error::启动后 3.5 分钟内仍未就绪，请到 SnapDeploy 看 Logs"
           exit 1
