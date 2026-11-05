@@ -61,8 +61,10 @@ async function startContainer(env) {
     const r = await fetch(`https://snapdeploy.dev/api/mobile/containers/${cid}/start`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${key}`,
+        // SnapDeploy 的 API 用 X-API-Key 认证，不是 Authorization: Bearer
+        'X-API-Key': key,
         'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 trip-oracle-worker/1.0',
       },
     });
     const body = await r.text();

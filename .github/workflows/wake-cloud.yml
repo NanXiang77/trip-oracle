@@ -41,10 +41,12 @@ jobs:
           fi
           echo "::group::POST /containers/$CID/start"
           # 402 = 免费时长用完；403 = token 权限不足；都如实打印，不重试
+          # 注意：SnapDeploy 的 API 用 X-API-Key 认证，不是 Authorization: Bearer
           code=$(curl -s -o /tmp/start.json -w '%{http_code}' -m 45 \
                  -X POST "$API_BASE/containers/$CID/start" \
-                 -H "Authorization: Bearer $KEY" \
-                 -H 'Content-Type: application/json' || true)
+                 -H "X-API-Key: $KEY" \
+                 -H 'Content-Type: application/json' \
+                 -H 'User-Agent: Mozilla/5.0 trip-oracle-ci/1.0' || true)
           echo "HTTP $code"
           head -c 400 /tmp/start.json 2>/dev/null || true
           echo "::endgroup::"
