@@ -25,7 +25,7 @@ on:
 jobs:
   wake:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
     env:
       HEALTH_URL: https://trip-oracle-dcf89.containers.snapdeploy.app/health
       API_BASE: https://snapdeploy.dev/api/mobile
@@ -57,7 +57,7 @@ jobs:
 
       - name: Wait until /health answers with JSON
         run: |
-          for i in $(seq 1 14); do
+          for i in $(seq 1 32); do
             code=$(curl -s -o /tmp/h.json -w '%{http_code}' -m 40 "$HEALTH_URL" || true)
             first=$(head -c 1 /tmp/h.json 2>/dev/null || echo '')
             echo "第 $i 次：HTTP $code"
@@ -67,5 +67,5 @@ jobs:
             fi
             sleep 15
           done
-          echo "::error::启动后 3.5 分钟内仍未就绪，请到 SnapDeploy 看 Logs"
+          echo "::error::启动后 8 分钟内仍未就绪，请到 SnapDeploy 看 Logs"
           exit 1
